@@ -1,14 +1,10 @@
 #![allow(clippy::type_complexity)]
 #![allow(clippy::too_many_arguments)]
 
-use bevy::{
-    color::palettes::tailwind::{NEUTRAL_900, NEUTRAL_950},
-    prelude::*,
-    window::WindowResized,
-};
+use bevy::{prelude::*, window::WindowResized};
 use std::{collections::VecDeque, mem};
 
-const GRID_CELLS: IVec2 = IVec2::new(40, 20);
+const GRID_CELLS: IVec2 = IVec2::new(20, 10);
 const GRID_CENTER: IVec2 = IVec2::new(GRID_CELLS.x / 2, GRID_CELLS.y / 2);
 
 #[derive(Default, Resource, Deref, DerefMut)]
@@ -18,6 +14,12 @@ struct CellSize(f32);
 struct TickTimer(Timer);
 
 #[derive(Default, Resource)]
+struct Atlas {
+    image: Handle<Image>,
+    layout: Handle<TextureAtlasLayout>,
+}
+
+#[derive(Debug, Default, Resource)]
 struct InputBuffer {
     deque: VecDeque<Direction>,
 }
@@ -35,7 +37,7 @@ impl InputBuffer {
     }
 }
 
-#[derive(Component, PartialEq)]
+#[derive(Debug, Component, Clone, Copy, PartialEq)]
 enum Direction {
     Left,
     Right,
@@ -44,12 +46,21 @@ enum Direction {
 }
 
 impl Direction {
-    fn to_vec(&self) -> Vec2 {
+    fn to_vec(self) -> Vec2 {
         match self {
             Direction::Left => Vec2::new(-1.0, 0.0),
             Direction::Right => Vec2::new(1.0, 0.0),
             Direction::Up => Vec2::new(0.0, 1.0),
             Direction::Down => Vec2::new(0.0, -1.0),
+        }
+    }
+
+    fn to_quat(self) -> Quat {
+        match self {
+            Direction::Right => Quat::IDENTITY,
+            Direction::Left => Quat::from_rotation_z(std::f32::consts::PI),
+            Direction::Up => Quat::from_rotation_z(std::f32::consts::PI / 2.0),
+            Direction::Down => Quat::from_rotation_z(-std::f32::consts::PI / 2.0),
         }
     }
 }
@@ -83,6 +94,21 @@ fn setup_cell_size(window: Single<&Window>, mut size: ResMut<CellSize>) {
     **size = (Vec2::new(window.width(), window.height()) / GRID_CELLS.as_vec2()).min_element();
 }
 
+fn setup_texture_atlas(
+    asset_server: Res<AssetServer>,
+    mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
+    mut atlas: ResMut<Atlas>,
+) {
+    atlas.image = asset_server.load("atlas.png");
+    atlas.layout = texture_atlas_layouts.add(TextureAtlasLayout::from_grid(
+        UVec2::splat(16),
+        8,
+        1,
+        Some(UVec2::splat(5)),
+        None,
+    ));
+}
+
 fn setup_grid(mut commands: Commands, size: Res<CellSize>) {
     for y in 0..GRID_CELLS.y {
         for x in 0..GRID_CELLS.x {
@@ -91,9 +117,9 @@ fn setup_grid(mut commands: Commands, size: Res<CellSize>) {
                 Cell(position),
                 Sprite::from_color(
                     if (x + y) % 2 == 0 {
-                        NEUTRAL_900
+                        Color::srgb_u8(0x10, 0x10, 0x10)
                     } else {
-                        NEUTRAL_950
+                        Color::srgb_u8(0x20, 0x20, 0x20)
                     },
                     Vec2::ONE,
                 ),
@@ -107,9 +133,7 @@ fn setup_grid(mut commands: Commands, size: Res<CellSize>) {
     }
 }
 
-fn setup_snake(mut commands: Commands, asset_server: Res<AssetServer>, size: Res<CellSize>) {
-    let texture = asset_server.load("cat.png");
-
+fn setup_snake(mut commands: Commands, size: Res<CellSize>, atlas: Res<Atlas>) {
     let position = GRID_CENTER.as_vec2();
     commands.spawn((
         SnakeHead,
@@ -118,7 +142,11 @@ fn setup_snake(mut commands: Commands, asset_server: Res<AssetServer>, size: Res
         Transform::from_translation(Vec3::from((position * **size, 0.0)))
             .with_scale(Vec3::splat(**size)),
         Sprite {
-            image: texture.clone(),
+            image: atlas.image.clone(),
+            texture_atlas: Some(TextureAtlas {
+                layout: atlas.layout.clone(),
+                index: 0,
+            }),
             custom_size: Some(Vec2::ONE),
             ..Default::default()
         },
@@ -132,7 +160,11 @@ fn setup_snake(mut commands: Commands, asset_server: Res<AssetServer>, size: Res
         Transform::from_translation(Vec3::from((position * **size, 0.0)))
             .with_scale(Vec3::splat(**size)),
         Sprite {
-            image: texture.clone(),
+            image: atlas.image.clone(),
+            texture_atlas: Some(TextureAtlas {
+                layout: atlas.layout.clone(),
+                index: 1,
+            }),
             custom_size: Some(Vec2::ONE),
             ..Default::default()
         },
@@ -146,14 +178,18 @@ fn setup_snake(mut commands: Commands, asset_server: Res<AssetServer>, size: Res
         Transform::from_translation(Vec3::from((position * 2.0 * **size, 0.0)))
             .with_scale(Vec3::splat(**size)),
         Sprite {
-            image: texture.clone(),
+            image: atlas.image.clone(),
+            texture_atlas: Some(TextureAtlas {
+                layout: atlas.layout.clone(),
+                index: 3,
+            }),
             custom_size: Some(Vec2::ONE),
             ..Default::default()
         },
     ));
 }
 
-fn setup_food(mut commands: Commands, asset_server: Res<AssetServer>, size: Res<CellSize>) {
+fn setup_food(mut commands: Commands, size: Res<CellSize>, atlas: Res<Atlas>) {
     let mut position = Vec2::new(
         rand::random_range(0..GRID_CELLS.x) as f32,
         rand::random_range(0..GRID_CELLS.y) as f32,
@@ -178,7 +214,11 @@ fn setup_food(mut commands: Commands, asset_server: Res<AssetServer>, size: Res<
         Transform::from_translation(Vec3::from((position * **size, 0.0)))
             .with_scale(Vec3::splat(**size)),
         Sprite {
-            image: asset_server.load("cat.png"),
+            image: atlas.image.clone(),
+            texture_atlas: Some(TextureAtlas {
+                layout: atlas.layout.clone(),
+                index: 4,
+            }),
             custom_size: Some(Vec2::ONE),
             ..Default::default()
         },
@@ -214,75 +254,100 @@ fn advance_tick_timer(time: Res<Time>, mut timer: ResMut<TickTimer>) {
     timer.tick(time.delta());
 }
 
-fn control_snake(
-    mut head_dir: Single<&mut Direction, With<SnakeHead>>,
-    keyboard_input: Res<ButtonInput<KeyCode>>,
-    mut input_buffer: ResMut<InputBuffer>,
-    timer: Res<TickTimer>,
-) {
+fn control_snake(keyboard_input: Res<ButtonInput<KeyCode>>, mut input_buffer: ResMut<InputBuffer>) {
     let mut new_dir = None;
 
     if keyboard_input.just_pressed(KeyCode::ArrowLeft) {
         new_dir = Some(Direction::Left);
-    } else if keyboard_input.just_pressed(KeyCode::ArrowRight) {
+    }
+    if keyboard_input.just_pressed(KeyCode::ArrowRight) {
         new_dir = Some(Direction::Right);
-    } else if keyboard_input.just_pressed(KeyCode::ArrowUp) {
+    }
+    if keyboard_input.just_pressed(KeyCode::ArrowUp) {
         new_dir = Some(Direction::Up);
-    } else if keyboard_input.just_pressed(KeyCode::ArrowDown) {
+    }
+    if keyboard_input.just_pressed(KeyCode::ArrowDown) {
         new_dir = Some(Direction::Down);
     }
 
-    if let Some(new_dir) = new_dir
-        && new_dir != **head_dir
-    {
+    if let Some(new_dir) = new_dir {
         input_buffer.push(new_dir);
-    }
-
-    if timer.just_finished()
-        && let Some(dir) = input_buffer.pop()
-        && dir.to_vec() != -head_dir.to_vec()
-    {
-        *head_dir.as_mut() = dir;
     }
 }
 
 fn move_snake(
-    head: Single<(&Direction, &mut Cell, &mut Transform), With<SnakeHead>>,
-    mut body: Query<(&mut Cell, &mut Transform), (With<SnakeBody>, Without<SnakeHead>)>,
+    head: Single<(&mut Cell, &mut Direction, &mut Transform), With<SnakeHead>>,
+    mut body: Query<
+        (&mut Cell, &mut Direction, &mut Transform, &mut Sprite),
+        (With<SnakeBody>, Without<SnakeHead>),
+    >,
     tail: Single<
-        (&mut Cell, &mut Transform),
+        (&mut Cell, &mut Direction, &mut Transform),
         (With<SnakeTail>, Without<SnakeHead>, Without<SnakeBody>),
     >,
     size: Res<CellSize>,
     timer: Res<TickTimer>,
+    mut input_buffer: ResMut<InputBuffer>,
 ) {
     if !timer.just_finished() {
         return;
     }
 
-    let (dir, mut cell, mut transform) = head.into_inner();
+    let (mut cell, mut dir, mut transform) = head.into_inner();
+
     let mut prev_pos = **cell;
+    let mut prev_dir = *dir;
+    let mut next_dir = prev_dir;
+
+    while let Some(new_dir) = input_buffer.pop() {
+        if new_dir == *dir || -new_dir.to_vec() == dir.to_vec() {
+            continue;
+        }
+
+        next_dir = new_dir;
+        break;
+    }
+
+    *dir = next_dir;
     **cell += dir.to_vec();
     **cell += GRID_CELLS.as_vec2();
     **cell %= GRID_CELLS.as_vec2();
     transform.translation = Vec3::from((**cell * **size, 0.0));
+    transform.rotation = dir.to_quat();
 
-    for (mut cell, mut transform) in &mut body {
+    for (mut cell, mut dir, mut transform, mut sprite) in &mut body {
         mem::swap(&mut prev_pos, &mut **cell);
+        let cross = dir.to_vec().perp_dot(next_dir.to_vec());
+        if cross == 0.0 {
+            sprite.texture_atlas.as_mut().unwrap().index = 1;
+        } else {
+            sprite.texture_atlas.as_mut().unwrap().index = 2;
+        }
+        prev_dir = *dir;
+        *dir = next_dir;
+        next_dir = prev_dir;
         transform.translation = Vec3::from((**cell * **size, 0.0));
+        transform.rotation = dir.to_quat();
+        if cross > 0.0 {
+            transform.rotation *= Quat::from_rotation_x(std::f32::consts::PI)
+        }
     }
 
-    let (mut cell, mut transform) = tail.into_inner();
-    mem::swap(&mut prev_pos, &mut **cell);
+    let (mut cell, mut dir, mut transform) = tail.into_inner();
+    **cell = prev_pos;
+    *dir = next_dir;
     transform.translation = Vec3::from((**cell * **size, 0.0));
+    transform.rotation = dir.to_quat();
 }
 
 fn food_consumption(
     mut commands: Commands,
-    asset_server: Res<AssetServer>,
     head: Single<&Cell, With<SnakeHead>>,
     body: Query<&Cell, With<SnakeBody>>,
-    tail: Single<(Entity, &Cell), With<SnakeTail>>,
+    tail: Single<
+        (&Cell, &Direction, &Transform, &Sprite),
+        (With<SnakeTail>, Without<SnakeHead>, Without<SnakeBody>),
+    >,
     food: Single<
         (&mut Cell, &mut Transform),
         (
@@ -300,15 +365,16 @@ fn food_consumption(
     }
 
     let (mut food_cell, mut food_transform) = food.into_inner();
-    let (tail_entity, tail_cell) = tail.into_inner();
+    let (tail_cell, tail_dir, tail_transform, tail_sprite) = tail.into_inner();
 
     if **head == *food_cell {
         let mut new_pos = Vec2::new(
             rand::random_range(0..GRID_CELLS.x) as f32,
             rand::random_range(0..GRID_CELLS.y) as f32,
         );
+
         while ***head == new_pos
-            || body.iter().any(|seg| **seg == new_pos)
+            || body.iter().any(|cell| **cell == new_pos)
             || **tail_cell == new_pos
         {
             new_pos = Vec2::new(
@@ -320,29 +386,23 @@ fn food_consumption(
         **food_cell = new_pos;
         food_transform.translation = Vec3::from((new_pos * **size, 0.0));
 
-        commands.entity(tail_entity).remove::<SnakeTail>();
-        commands.entity(tail_entity).insert(SnakeBody);
-
         commands.spawn((
-            SnakeTail,
+            SnakeBody,
             *tail_cell,
-            Transform::from_translation(Vec3::from((**tail_cell * **size, 0.0)))
-                .with_scale(Vec3::splat(**size)),
-            Sprite {
-                image: asset_server.load("cat.png"),
-                custom_size: Some(Vec2::ONE),
-                ..Default::default()
-            },
+            *tail_dir,
+            *tail_transform,
+            tail_sprite.clone(),
         ));
     }
 }
 
 fn main() {
     App::new()
-        .add_plugins(DefaultPlugins)
+        .add_plugins(DefaultPlugins.set(ImagePlugin::default_nearest()))
         .add_systems(
             Startup,
             (
+                setup_texture_atlas,
                 setup_cell_size,
                 setup_camera,
                 setup_grid,
@@ -364,7 +424,9 @@ fn main() {
                 .chain(),
         )
         .init_resource::<CellSize>()
-        .insert_resource(TickTimer(Timer::from_seconds(0.1, TimerMode::Repeating)))
+        .init_resource::<Atlas>()
         .init_resource::<InputBuffer>()
+        .insert_resource(ClearColor(Color::BLACK))
+        .insert_resource(TickTimer(Timer::from_seconds(0.1, TimerMode::Repeating)))
         .run();
 }

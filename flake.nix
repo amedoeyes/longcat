@@ -14,10 +14,11 @@
       {
         devShells.default =
           with pkgs;
-          pkgs.mkShell rec {
+          pkgs.mkShell.override { stdenv = llvmPackages_20.libcxxStdenv; } rec {
             buildInputs = [
               rustc
               cargo
+              mold
               pkg-config
 
               udev

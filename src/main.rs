@@ -7,6 +7,19 @@ use std::{collections::VecDeque, mem};
 const GRID_CELLS: IVec2 = IVec2::new(20, 10);
 const GRID_CENTER: IVec2 = IVec2::new(GRID_CELLS.x / 2, GRID_CELLS.y / 2);
 
+#[derive(Debug)]
+enum AtlasSprite {
+    Head1 = 0,
+    Head2 = 1,
+    Head3 = 2,
+    Head4 = 3,
+    Body1 = 4,
+    Body2 = 6,
+    Tail1 = 8,
+    Tail2 = 9,
+    Fish = 10,
+}
+
 #[derive(Default, Resource, Deref, DerefMut)]
 struct CellSize(f32);
 
@@ -102,9 +115,9 @@ fn setup_texture_atlas(
     atlas.image = asset_server.load("atlas.png");
     atlas.layout = texture_atlas_layouts.add(TextureAtlasLayout::from_grid(
         UVec2::splat(16),
-        8,
-        1,
-        Some(UVec2::splat(5)),
+        2,
+        6,
+        None,
         None,
     ));
 }
@@ -145,7 +158,7 @@ fn setup_snake(mut commands: Commands, size: Res<CellSize>, atlas: Res<Atlas>) {
             image: atlas.image.clone(),
             texture_atlas: Some(TextureAtlas {
                 layout: atlas.layout.clone(),
-                index: 0,
+                index: AtlasSprite::Head1 as usize,
             }),
             custom_size: Some(Vec2::ONE),
             ..Default::default()
@@ -163,7 +176,7 @@ fn setup_snake(mut commands: Commands, size: Res<CellSize>, atlas: Res<Atlas>) {
             image: atlas.image.clone(),
             texture_atlas: Some(TextureAtlas {
                 layout: atlas.layout.clone(),
-                index: 1,
+                index: AtlasSprite::Body1 as usize,
             }),
             custom_size: Some(Vec2::ONE),
             ..Default::default()
@@ -181,7 +194,7 @@ fn setup_snake(mut commands: Commands, size: Res<CellSize>, atlas: Res<Atlas>) {
             image: atlas.image.clone(),
             texture_atlas: Some(TextureAtlas {
                 layout: atlas.layout.clone(),
-                index: 3,
+                index: AtlasSprite::Tail1 as usize,
             }),
             custom_size: Some(Vec2::ONE),
             ..Default::default()
@@ -217,7 +230,7 @@ fn setup_food(mut commands: Commands, size: Res<CellSize>, atlas: Res<Atlas>) {
             image: atlas.image.clone(),
             texture_atlas: Some(TextureAtlas {
                 layout: atlas.layout.clone(),
-                index: 4,
+                index: AtlasSprite::Fish as usize,
             }),
             custom_size: Some(Vec2::ONE),
             ..Default::default()
@@ -276,13 +289,13 @@ fn control_snake(keyboard_input: Res<ButtonInput<KeyCode>>, mut input_buffer: Re
 }
 
 fn move_snake(
-    head: Single<(&mut Cell, &mut Direction, &mut Transform), With<SnakeHead>>,
+    head: Single<(&mut Cell, &mut Direction, &mut Transform, &mut Sprite), With<SnakeHead>>,
     mut body: Query<
         (&mut Cell, &mut Direction, &mut Transform, &mut Sprite),
         (With<SnakeBody>, Without<SnakeHead>),
     >,
     tail: Single<
-        (&mut Cell, &mut Direction, &mut Transform),
+        (&mut Cell, &mut Direction, &mut Transform, &mut Sprite),
         (With<SnakeTail>, Without<SnakeHead>, Without<SnakeBody>),
     >,
     size: Res<CellSize>,
@@ -293,7 +306,7 @@ fn move_snake(
         return;
     }
 
-    let (mut cell, mut dir, mut transform) = head.into_inner();
+    let (mut cell, mut dir, mut transform, mut sprite) = head.into_inner();
 
     let mut prev_pos = **cell;
     let mut prev_dir = *dir;
@@ -314,15 +327,22 @@ fn move_snake(
     **cell %= GRID_CELLS.as_vec2();
     transform.translation = Vec3::from((**cell * **size, 0.0));
     transform.rotation = dir.to_quat();
+    if let Some(atlas) = sprite.texture_atlas.as_mut() {
+        atlas.index = if atlas.index == AtlasSprite::Head1 as usize {
+            AtlasSprite::Head2 as usize
+        } else {
+            AtlasSprite::Head1 as usize
+        };
+    }
 
     for (mut cell, mut dir, mut transform, mut sprite) in &mut body {
         mem::swap(&mut prev_pos, &mut **cell);
         let cross = dir.to_vec().perp_dot(next_dir.to_vec());
-        if cross == 0.0 {
-            sprite.texture_atlas.as_mut().unwrap().index = 1;
+        sprite.texture_atlas.as_mut().unwrap().index = if cross == 0.0 {
+            AtlasSprite::Body1 as usize
         } else {
-            sprite.texture_atlas.as_mut().unwrap().index = 2;
-        }
+            AtlasSprite::Body2 as usize
+        };
         prev_dir = *dir;
         *dir = next_dir;
         next_dir = prev_dir;
@@ -333,11 +353,54 @@ fn move_snake(
         }
     }
 
-    let (mut cell, mut dir, mut transform) = tail.into_inner();
+    let (mut cell, mut dir, mut transform, mut sprite) = tail.into_inner();
     **cell = prev_pos;
     *dir = next_dir;
     transform.translation = Vec3::from((**cell * **size, 0.0));
     transform.rotation = dir.to_quat();
+    if let Some(atlas) = sprite.texture_atlas.as_mut() {
+        atlas.index = if atlas.index == AtlasSprite::Tail1 as usize {
+            AtlasSprite::Tail2 as usize
+        } else {
+            AtlasSprite::Tail1 as usize
+        };
+    }
+}
+
+fn open_mouth(
+    head: Single<(&Cell, &Direction, &mut Sprite), With<SnakeHead>>,
+    body: Query<&Cell, With<SnakeBody>>,
+    tail: Single<&Cell, (With<SnakeTail>, Without<SnakeHead>, Without<SnakeBody>)>,
+    food: Single<
+        &mut Cell,
+        (
+            With<Food>,
+            Without<SnakeHead>,
+            Without<SnakeBody>,
+            Without<SnakeTail>,
+        ),
+    >,
+    timer: ResMut<TickTimer>,
+) {
+    if !timer.just_finished() {
+        return;
+    }
+
+    let (head_cell, head_dir, mut head_sprite) = head.into_inner();
+
+    let mut next_step = **head_cell + head_dir.to_vec();
+    next_step += GRID_CELLS.as_vec2();
+    next_step %= GRID_CELLS.as_vec2();
+
+    if ***food == next_step || body.iter().any(|cell| **cell == next_step) || ***tail == next_step {
+        if let Some(atlas) = head_sprite.texture_atlas.as_mut() {
+            atlas.index = if atlas.index == AtlasSprite::Head1 as usize {
+                AtlasSprite::Head3 as usize
+            } else {
+                AtlasSprite::Head4 as usize
+            };
+        }
+    }
 }
 
 fn food_consumption(
@@ -419,6 +482,7 @@ fn main() {
                 advance_tick_timer,
                 control_snake,
                 move_snake,
+                open_mouth,
                 food_consumption,
             )
                 .chain(),

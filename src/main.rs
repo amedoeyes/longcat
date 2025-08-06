@@ -90,7 +90,7 @@ struct SnakeTail;
 #[derive(Component)]
 struct Food;
 
-#[derive(Component, Deref, DerefMut, PartialEq, Clone, Copy)]
+#[derive(Debug, Component, Deref, DerefMut, PartialEq, Clone, Copy)]
 struct Cell(Vec2);
 
 fn setup_camera(mut commands: Commands, size: Res<CellSize>) {
@@ -308,12 +308,17 @@ fn move_snake(
 
     let (mut cell, mut dir, mut transform, mut sprite) = head.into_inner();
 
-    let mut prev_pos = **cell;
     let mut prev_dir = *dir;
     let mut next_dir = prev_dir;
+    let mut prev_cell = **cell;
 
     while let Some(new_dir) = input_buffer.pop() {
         if new_dir == *dir || -new_dir.to_vec() == dir.to_vec() {
+            continue;
+        }
+
+        let next_cell = ((**cell + new_dir.to_vec()) + GRID_CELLS.as_vec2()) % GRID_CELLS.as_vec2();
+        if body.iter().any(|(cell, _, _, _)| **cell == next_cell) || **tail.0 == next_cell {
             continue;
         }
 
@@ -322,9 +327,7 @@ fn move_snake(
     }
 
     *dir = next_dir;
-    **cell += dir.to_vec();
-    **cell += GRID_CELLS.as_vec2();
-    **cell %= GRID_CELLS.as_vec2();
+    **cell = ((**cell + next_dir.to_vec()) + GRID_CELLS.as_vec2()) % GRID_CELLS.as_vec2();
     transform.translation = Vec3::from((**cell * **size, 0.0));
     transform.rotation = dir.to_quat();
     if let Some(atlas) = sprite.texture_atlas.as_mut() {
@@ -336,7 +339,7 @@ fn move_snake(
     }
 
     for (mut cell, mut dir, mut transform, mut sprite) in &mut body {
-        mem::swap(&mut prev_pos, &mut **cell);
+        mem::swap(&mut prev_cell, &mut **cell);
         let cross = dir.to_vec().perp_dot(next_dir.to_vec());
         sprite.texture_atlas.as_mut().unwrap().index = if cross == 0.0 {
             AtlasSprite::Body1 as usize
@@ -354,7 +357,7 @@ fn move_snake(
     }
 
     let (mut cell, mut dir, mut transform, mut sprite) = tail.into_inner();
-    **cell = prev_pos;
+    **cell = prev_cell;
     *dir = next_dir;
     transform.translation = Vec3::from((**cell * **size, 0.0));
     transform.rotation = dir.to_quat();
@@ -369,17 +372,8 @@ fn move_snake(
 
 fn open_mouth(
     head: Single<(&Cell, &Direction, &mut Sprite), With<SnakeHead>>,
-    body: Query<&Cell, With<SnakeBody>>,
-    tail: Single<&Cell, (With<SnakeTail>, Without<SnakeHead>, Without<SnakeBody>)>,
-    food: Single<
-        &mut Cell,
-        (
-            With<Food>,
-            Without<SnakeHead>,
-            Without<SnakeBody>,
-            Without<SnakeTail>,
-        ),
-    >,
+    rest: Query<&Cell, Or<(With<SnakeBody>, With<SnakeTail>)>>,
+    food: Single<&Cell, With<Food>>,
     timer: ResMut<TickTimer>,
 ) {
     if !timer.just_finished() {
@@ -388,11 +382,10 @@ fn open_mouth(
 
     let (head_cell, head_dir, mut head_sprite) = head.into_inner();
 
-    let mut next_step = **head_cell + head_dir.to_vec();
-    next_step += GRID_CELLS.as_vec2();
-    next_step %= GRID_CELLS.as_vec2();
+    let next_cell =
+        ((**head_cell + head_dir.to_vec()) + GRID_CELLS.as_vec2()) % GRID_CELLS.as_vec2();
 
-    if ***food == next_step || body.iter().any(|cell| **cell == next_step) || ***tail == next_step {
+    if ***food == next_cell || rest.iter().any(|cell| **cell == next_cell) {
         if let Some(atlas) = head_sprite.texture_atlas.as_mut() {
             atlas.index = if atlas.index == AtlasSprite::Head1 as usize {
                 AtlasSprite::Head3 as usize
@@ -407,10 +400,7 @@ fn food_consumption(
     mut commands: Commands,
     head: Single<&Cell, With<SnakeHead>>,
     body: Query<&Cell, With<SnakeBody>>,
-    tail: Single<
-        (&Cell, &Direction, &Transform, &Sprite),
-        (With<SnakeTail>, Without<SnakeHead>, Without<SnakeBody>),
-    >,
+    tail: Single<(&Cell, &Direction, &Transform, &Sprite), With<SnakeTail>>,
     food: Single<
         (&mut Cell, &mut Transform),
         (
@@ -430,6 +420,7 @@ fn food_consumption(
     let (mut food_cell, mut food_transform) = food.into_inner();
     let (tail_cell, tail_dir, tail_transform, tail_sprite) = tail.into_inner();
 
+    // TODO: create a list of empty cells instead and if the list is empty switch to a win state or someting
     if **head == *food_cell {
         let mut new_pos = Vec2::new(
             rand::random_range(0..GRID_CELLS.x) as f32,

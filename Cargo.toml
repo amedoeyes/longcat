@@ -35,6 +35,7 @@ features = [
 	"bevy_log",
 	"bevy_render",
 	"bevy_sprite",
+	"bevy_state",
 	"bevy_text",
 	"bevy_ui",
 	"bevy_window",

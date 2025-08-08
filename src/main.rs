@@ -139,7 +139,7 @@ fn setup_grid(mut commands: Commands, size: Res<CellSize>) {
                 Transform {
                     translation: Vec3::from((position * **size, 0.0)),
                     scale: Vec3::splat(**size),
-                    ..Default::default()
+                    ..default()
                 },
             ));
         }
@@ -161,7 +161,7 @@ fn setup_snake(mut commands: Commands, size: Res<CellSize>, atlas: Res<Atlas>) {
                 index: AtlasSprite::Head1 as usize,
             }),
             custom_size: Some(Vec2::ONE),
-            ..Default::default()
+            ..default()
         },
     ));
 
@@ -179,7 +179,7 @@ fn setup_snake(mut commands: Commands, size: Res<CellSize>, atlas: Res<Atlas>) {
                 index: AtlasSprite::Body1 as usize,
             }),
             custom_size: Some(Vec2::ONE),
-            ..Default::default()
+            ..default()
         },
     ));
 
@@ -188,7 +188,7 @@ fn setup_snake(mut commands: Commands, size: Res<CellSize>, atlas: Res<Atlas>) {
         SnakeTail,
         Direction::Right,
         Cell(position),
-        Transform::from_translation(Vec3::from((position * 2.0 * **size, 0.0)))
+        Transform::from_translation(Vec3::from((position * **size, 0.0)))
             .with_scale(Vec3::splat(**size)),
         Sprite {
             image: atlas.image.clone(),
@@ -197,7 +197,7 @@ fn setup_snake(mut commands: Commands, size: Res<CellSize>, atlas: Res<Atlas>) {
                 index: AtlasSprite::Tail1 as usize,
             }),
             custom_size: Some(Vec2::ONE),
-            ..Default::default()
+            ..default()
         },
     ));
 }
@@ -233,7 +233,7 @@ fn setup_food(mut commands: Commands, size: Res<CellSize>, atlas: Res<Atlas>) {
                 index: AtlasSprite::Fish as usize,
             }),
             custom_size: Some(Vec2::ONE),
-            ..Default::default()
+            ..default()
         },
     ));
 }
@@ -317,7 +317,7 @@ fn move_snake(
             continue;
         }
 
-        let next_cell = ((**cell + new_dir.to_vec()) + GRID_CELLS.as_vec2()) % GRID_CELLS.as_vec2();
+        let next_cell = (**cell + new_dir.to_vec()).rem_euclid(GRID_CELLS.as_vec2());
         if body.iter().any(|(cell, _, _, _)| **cell == next_cell) || **tail.0 == next_cell {
             continue;
         }
@@ -327,7 +327,7 @@ fn move_snake(
     }
 
     *dir = next_dir;
-    **cell = ((**cell + next_dir.to_vec()) + GRID_CELLS.as_vec2()) % GRID_CELLS.as_vec2();
+    **cell = (**cell + next_dir.to_vec()).rem_euclid(GRID_CELLS.as_vec2());
     transform.translation = Vec3::from((**cell * **size, 0.0));
     transform.rotation = dir.to_quat();
     if let Some(atlas) = sprite.texture_atlas.as_mut() {
@@ -372,7 +372,6 @@ fn move_snake(
 
 fn open_mouth(
     head: Single<(&Cell, &Direction, &mut Sprite), With<SnakeHead>>,
-    rest: Query<&Cell, Or<(With<SnakeBody>, With<SnakeTail>)>>,
     food: Single<&Cell, With<Food>>,
     timer: ResMut<TickTimer>,
 ) {
@@ -382,10 +381,11 @@ fn open_mouth(
 
     let (head_cell, head_dir, mut head_sprite) = head.into_inner();
 
-    let next_cell =
-        ((**head_cell + head_dir.to_vec()) + GRID_CELLS.as_vec2()) % GRID_CELLS.as_vec2();
-
-    if ***food == next_cell || rest.iter().any(|cell| **cell == next_cell) {
+    let dir_vec = head_dir.to_vec();
+    if [dir_vec, dir_vec.perp(), -dir_vec.perp()]
+        .map(|dir| (**head_cell + dir).rem_euclid(GRID_CELLS.as_vec2()))
+        .contains(*food)
+    {
         if let Some(atlas) = head_sprite.texture_atlas.as_mut() {
             atlas.index = if atlas.index == AtlasSprite::Head1 as usize {
                 AtlasSprite::Head3 as usize
@@ -396,7 +396,7 @@ fn open_mouth(
     }
 }
 
-fn food_consumption(
+fn consume_food(
     mut commands: Commands,
     head: Single<&Cell, With<SnakeHead>>,
     body: Query<&Cell, With<SnakeBody>>,
@@ -450,38 +450,184 @@ fn food_consumption(
     }
 }
 
+#[derive(States, Debug, Clone, Copy, Default, Eq, PartialEq, Hash)]
+#[states(scoped_entities)]
+enum AppState {
+    #[default]
+    Menu,
+    Gameplay,
+}
+
+#[derive(SubStates, Debug, Clone, Copy, Default, Eq, PartialEq, Hash)]
+#[source(AppState = AppState::Gameplay)]
+enum GameplayState {
+    #[default]
+    Running,
+    Paused,
+    Over,
+}
+
+#[derive(Component, Clone, Copy, PartialEq, Eq)]
+enum MenuItem {
+    Start,
+    Quit,
+}
+
+#[derive(Component)]
+struct SelectedMenuItem;
+
+fn setup_menu(mut commands: Commands) {
+    commands
+        .spawn((
+            StateScoped(AppState::Menu),
+            Camera2d,
+            Node {
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                flex_direction: FlexDirection::Column,
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..default()
+            },
+        ))
+        .with_children(|parent| {
+            for (i, (item, label)) in [(MenuItem::Start, "Start"), (MenuItem::Quit, "Quit")]
+                .iter()
+                .enumerate()
+            {
+                if i == 0 {
+                    parent.spawn((
+                        *item,
+                        SelectedMenuItem,
+                        Text::new(*label),
+                        TextColor(Color::srgb(1.0, 0.0, 0.0)),
+                        TextFont::from_font_size(40.0),
+                    ));
+                } else {
+                    parent.spawn((
+                        *item,
+                        Text::new(*label),
+                        TextColor(Color::WHITE),
+                        TextFont::from_font_size(40.0),
+                    ));
+                };
+            }
+        });
+}
+
+fn handle_menu_navigation(
+    mut commands: Commands,
+    keyboard_input: Res<ButtonInput<KeyCode>>,
+    selected_menu_item: Single<Entity, With<SelectedMenuItem>>,
+    menu_items: Query<Entity, With<MenuItem>>,
+) {
+    if keyboard_input.just_pressed(KeyCode::ArrowUp)
+        || keyboard_input.just_pressed(KeyCode::ArrowDown)
+    {
+        let menu_items = menu_items.iter().collect::<Vec<Entity>>();
+
+        if let Some(current_index) = menu_items.iter().position(|&e| e == *selected_menu_item) {
+            let new_index = if keyboard_input.just_pressed(KeyCode::ArrowUp) {
+                current_index.wrapping_sub(1)
+            } else {
+                current_index + 1
+            }
+            .rem_euclid(menu_items.len());
+
+            commands
+                .entity(*selected_menu_item)
+                .remove::<SelectedMenuItem>();
+
+            commands
+                .entity(menu_items[new_index])
+                .insert(SelectedMenuItem);
+        }
+    }
+}
+
+fn update_menu_item_colors(
+    mut selected_menu_item: Single<
+        &mut TextColor,
+        (With<SelectedMenuItem>, Changed<SelectedMenuItem>),
+    >,
+    mut menu_items: Query<&mut TextColor, (With<MenuItem>, Without<SelectedMenuItem>)>,
+) {
+    selected_menu_item.0 = Color::srgb(1.0, 0.0, 0.0);
+    for mut item in menu_items.iter_mut() {
+        item.0 = Color::WHITE;
+    }
+}
+
+fn handle_menu_selection(
+    selected_menu_item: Single<&MenuItem, With<SelectedMenuItem>>,
+    keyboard_input: Res<ButtonInput<KeyCode>>,
+    mut next_state: ResMut<NextState<AppState>>,
+    mut event_writer: EventWriter<AppExit>,
+) {
+    if keyboard_input.just_pressed(KeyCode::Enter) {
+        match *selected_menu_item {
+            MenuItem::Start => {
+                next_state.set(AppState::Gameplay);
+            }
+            MenuItem::Quit => {
+                event_writer.write(AppExit::Success);
+            }
+        }
+    }
+}
+
 fn main() {
-    App::new()
-        .add_plugins(DefaultPlugins.set(ImagePlugin::default_nearest()))
-        .add_systems(
-            Startup,
-            (
-                setup_texture_atlas,
-                setup_cell_size,
-                setup_camera,
-                setup_grid,
-                setup_snake,
-                setup_food,
-            )
-                .chain(),
+    let mut app = App::default();
+
+    app.add_plugins(DefaultPlugins.set(ImagePlugin::default_nearest()));
+
+    app.init_state::<AppState>();
+    app.add_sub_state::<GameplayState>();
+
+    app.init_resource::<CellSize>();
+    app.init_resource::<Atlas>();
+    app.init_resource::<InputBuffer>();
+    app.insert_resource(ClearColor(Color::BLACK));
+    app.insert_resource(TickTimer(Timer::from_seconds(0.1, TimerMode::Repeating)));
+
+    app.add_systems(OnEnter(AppState::Menu), setup_menu);
+    app.add_systems(
+        Update,
+        (
+            handle_menu_navigation,
+            update_menu_item_colors,
+            handle_menu_selection,
         )
-        .add_systems(
-            Update,
-            (
-                resize_cells,
-                offset_camera,
-                advance_tick_timer,
-                control_snake,
-                move_snake,
-                open_mouth,
-                food_consumption,
-            )
-                .chain(),
+            .chain()
+            .run_if(in_state(AppState::Menu)),
+    );
+
+    app.add_systems(
+        OnEnter(AppState::Gameplay),
+        (
+            setup_texture_atlas,
+            setup_cell_size,
+            setup_camera,
+            setup_grid,
+            setup_snake,
+            setup_food,
         )
-        .init_resource::<CellSize>()
-        .init_resource::<Atlas>()
-        .init_resource::<InputBuffer>()
-        .insert_resource(ClearColor(Color::BLACK))
-        .insert_resource(TickTimer(Timer::from_seconds(0.1, TimerMode::Repeating)))
-        .run();
+            .chain(),
+    );
+
+    app.add_systems(
+        Update,
+        (
+            resize_cells,
+            offset_camera.run_if(resource_changed::<CellSize>),
+            (advance_tick_timer, control_snake).run_if(in_state(GameplayState::Running)),
+            move_snake,
+            open_mouth,
+            consume_food,
+        )
+            .run_if(in_state(AppState::Gameplay))
+            .chain(),
+    );
+
+    app.run();
 }

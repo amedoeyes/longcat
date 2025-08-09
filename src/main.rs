@@ -281,17 +281,16 @@ fn offset_camera(
     }
 }
 
-fn resize_cells(
-    mut resize_reader: EventReader<WindowResized>,
-    mut cells: Query<(&mut Transform, &Cell)>,
-    mut size: ResMut<CellSize>,
-) {
-    for e in resize_reader.read() {
+fn handle_resize(mut resize_reader: EventReader<WindowResized>, mut size: ResMut<CellSize>) {
+    if let Some(e) = resize_reader.read().last() {
         **size = (Vec2::new(e.width, e.height) / GRID_CELLS.as_vec2()).min_element() - 1.0;
-        for (mut transform, cell) in &mut cells {
-            transform.translation = Vec3::from((**cell * **size, 0.0));
-            transform.scale = Vec3::splat(**size);
-        }
+    }
+}
+
+fn resize_cells(mut cells: Query<(&mut Transform, &Cell)>, size: Res<CellSize>) {
+    for (mut transform, cell) in &mut cells {
+        transform.translation = Vec3::from((**cell * **size, 0.0));
+        transform.scale = Vec3::splat(**size);
     }
 }
 
@@ -299,7 +298,16 @@ fn advance_tick_timer(time: Res<Time>, mut timer: ResMut<TickTimer>) {
     timer.tick(time.delta());
 }
 
-fn every_tick() -> impl Condition<()> {
+fn pause_tick_timer(mut timer: ResMut<TickTimer>) {
+    timer.reset();
+    timer.pause();
+}
+
+fn unpause_tick_timer(mut timer: ResMut<TickTimer>) {
+    timer.unpause();
+}
+
+fn tick_passed() -> impl Condition<()> {
     IntoSystem::into_system(|timer: Res<TickTimer>| timer.just_finished())
 }
 
@@ -745,15 +753,6 @@ fn main() {
     );
 
     app.add_systems(
-        Update,
-        toggle_pause.run_if(
-            in_state(GameplayState::Running)
-                .or(in_state(GameplayState::Paused))
-                .and(input_just_pressed(KeyCode::Space)),
-        ),
-    );
-
-    app.add_systems(
         OnEnter(AppState::Gameplay),
         (
             setup_texture_atlas,
@@ -766,26 +765,35 @@ fn main() {
             .chain(),
     );
 
-    app.add_systems(OnEnter(GameplayState::Reset), reset);
-
     app.add_systems(
         Update,
         (
-            resize_cells,
-            offset_camera.run_if(resource_changed::<CellSize>),
-            (
-                advance_tick_timer,
-                control_snake,
-                (move_snake, open_mouth, consume_food, handle_hit)
-                    .chain()
-                    .run_if(every_tick()),
-            )
+            handle_resize,
+            (resize_cells, offset_camera).run_if(resource_changed::<CellSize>),
+            (advance_tick_timer, control_snake).run_if(in_state(GameplayState::Running)),
+            (move_snake, open_mouth, consume_food, handle_hit)
                 .chain()
-                .run_if(in_state(GameplayState::Running)),
+                .run_if(tick_passed()),
         )
             .chain()
             .run_if(in_state(AppState::Gameplay)),
     );
+
+    app.add_systems(
+        Update,
+        toggle_pause.run_if(
+            in_state(GameplayState::Running)
+                .or(in_state(GameplayState::Paused))
+                .and(input_just_pressed(KeyCode::Space)),
+        ),
+    );
+
+    app.add_systems(OnEnter(GameplayState::Paused), pause_tick_timer);
+    app.add_systems(OnExit(GameplayState::Paused), unpause_tick_timer);
+    app.add_systems(OnEnter(GameplayState::Over), pause_tick_timer);
+    app.add_systems(OnExit(GameplayState::Over), unpause_tick_timer);
+
+    app.add_systems(OnEnter(GameplayState::Reset), reset);
 
     app.run();
 }

@@ -281,24 +281,21 @@ fn advance_tick_timer(time: Res<Time>, mut timer: ResMut<TickTimer>) {
     timer.tick(time.delta());
 }
 
+fn every_tick() -> impl Condition<()> {
+    IntoSystem::into_system(|timer: Res<TickTimer>| timer.just_finished())
+}
+
 fn control_snake(keyboard_input: Res<ButtonInput<KeyCode>>, mut input_buffer: ResMut<InputBuffer>) {
     let mut new_dir = None;
 
     if keyboard_input.just_pressed(KeyCode::ArrowLeft) {
-        new_dir = Some(Direction::Left);
-    }
-    if keyboard_input.just_pressed(KeyCode::ArrowRight) {
-        new_dir = Some(Direction::Right);
-    }
-    if keyboard_input.just_pressed(KeyCode::ArrowUp) {
-        new_dir = Some(Direction::Up);
-    }
-    if keyboard_input.just_pressed(KeyCode::ArrowDown) {
-        new_dir = Some(Direction::Down);
-    }
-
-    if let Some(new_dir) = new_dir {
-        input_buffer.push(new_dir);
+        input_buffer.push(Direction::Left);
+    } else if keyboard_input.just_pressed(KeyCode::ArrowRight) {
+        input_buffer.push(Direction::Right);
+    } else if keyboard_input.just_pressed(KeyCode::ArrowUp) {
+        input_buffer.push(Direction::Up);
+    } else if keyboard_input.just_pressed(KeyCode::ArrowDown) {
+        input_buffer.push(Direction::Down);
     }
 }
 
@@ -313,13 +310,8 @@ fn move_snake(
         (With<SnakeTail>, Without<SnakeHead>, Without<SnakeBody>),
     >,
     size: Res<CellSize>,
-    timer: Res<TickTimer>,
     mut input_buffer: ResMut<InputBuffer>,
 ) {
-    if !timer.just_finished() {
-        return;
-    }
-
     let (mut cell, mut dir, mut transform, mut sprite) = head.into_inner();
 
     let mut prev_dir = *dir;
@@ -387,12 +379,7 @@ fn move_snake(
 fn open_mouth(
     head: Single<(&Cell, &Direction, &mut Sprite), With<SnakeHead>>,
     food: Single<&Cell, With<Food>>,
-    timer: ResMut<TickTimer>,
 ) {
-    if !timer.just_finished() {
-        return;
-    }
-
     let (head_cell, head_dir, mut head_sprite) = head.into_inner();
 
     let dir_vec = head_dir.to_vec();
@@ -425,12 +412,7 @@ fn consume_food(
         ),
     >,
     size: Res<CellSize>,
-    timer: ResMut<TickTimer>,
 ) {
-    if !timer.just_finished() {
-        return;
-    }
-
     let (mut food_cell, mut food_transform) = food.into_inner();
     let (tail_cell, tail_dir, tail_transform, tail_sprite) = tail.into_inner();
 
@@ -699,9 +681,9 @@ fn main() {
             (
                 advance_tick_timer,
                 control_snake,
-                move_snake,
-                open_mouth,
-                consume_food,
+                (move_snake, open_mouth, consume_food)
+                    .chain()
+                    .run_if(every_tick()),
             )
                 .chain()
                 .run_if(in_state(GameplayState::Running)),

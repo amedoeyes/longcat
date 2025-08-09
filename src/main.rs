@@ -1,7 +1,7 @@
 #![allow(clippy::type_complexity)]
 #![allow(clippy::too_many_arguments)]
 
-use bevy::{prelude::*, window::WindowResized};
+use bevy::{input::common_conditions::input_just_pressed, prelude::*, window::WindowResized};
 use std::{collections::VecDeque, mem};
 
 const GRID_CELLS: IVec2 = IVec2::new(20, 10);
@@ -93,14 +93,12 @@ struct Food;
 #[derive(Debug, Component, Deref, DerefMut, PartialEq, Clone, Copy)]
 struct Cell(Vec2);
 
-fn setup_camera(mut commands: Commands, size: Res<CellSize>) {
-    commands.spawn((
-        Camera2d,
-        Transform::from_translation(Vec3::from((
-            (GRID_CELLS.as_vec2() * **size / 2.0) - **size / 2.0,
-            0.0,
-        ))),
-    ));
+fn setup_camera(mut commands: Commands) {
+    commands.spawn(Camera2d);
+}
+
+fn setup_gameplay_camera(mut camera: Single<&mut Transform, With<Camera2d>>, size: Res<CellSize>) {
+    camera.translation = Vec3::from(((GRID_CELLS.as_vec2() * **size / 2.0) - **size / 2.0, 0.0));
 }
 
 fn setup_cell_size(window: Single<&Window>, mut size: ResMut<CellSize>) {
@@ -127,6 +125,7 @@ fn setup_grid(mut commands: Commands, size: Res<CellSize>) {
         for x in 0..GRID_CELLS.x {
             let position = Vec2::new(x as f32, y as f32);
             commands.spawn((
+                StateScoped(AppState::Gameplay),
                 Cell(position),
                 Sprite::from_color(
                     if (x + y) % 2 == 0 {
@@ -149,6 +148,7 @@ fn setup_grid(mut commands: Commands, size: Res<CellSize>) {
 fn setup_snake(mut commands: Commands, size: Res<CellSize>, atlas: Res<Atlas>) {
     let position = GRID_CENTER.as_vec2();
     commands.spawn((
+        StateScoped(AppState::Gameplay),
         SnakeHead,
         Direction::Right,
         Cell(position),
@@ -167,6 +167,7 @@ fn setup_snake(mut commands: Commands, size: Res<CellSize>, atlas: Res<Atlas>) {
 
     let position = position + Direction::Left.to_vec();
     commands.spawn((
+        StateScoped(AppState::Gameplay),
         SnakeBody,
         Direction::Right,
         Cell(position),
@@ -185,6 +186,7 @@ fn setup_snake(mut commands: Commands, size: Res<CellSize>, atlas: Res<Atlas>) {
 
     let position = position + Direction::Left.to_vec();
     commands.spawn((
+        StateScoped(AppState::Gameplay),
         SnakeTail,
         Direction::Right,
         Cell(position),
@@ -222,6 +224,7 @@ fn setup_food(mut commands: Commands, size: Res<CellSize>, atlas: Res<Atlas>) {
     }
 
     commands.spawn((
+        StateScoped(AppState::Gameplay),
         Food,
         Cell(position),
         Transform::from_translation(Vec3::from((position * **size, 0.0)))
@@ -441,6 +444,7 @@ fn consume_food(
         food_transform.translation = Vec3::from((new_pos * **size, 0.0));
 
         commands.spawn((
+            StateScoped(AppState::Gameplay),
             SnakeBody,
             *tail_cell,
             *tail_dir,
@@ -460,6 +464,7 @@ enum AppState {
 
 #[derive(SubStates, Debug, Clone, Copy, Default, Eq, PartialEq, Hash)]
 #[source(AppState = AppState::Gameplay)]
+#[states(scoped_entities)]
 enum GameplayState {
     #[default]
     Running,
@@ -467,52 +472,22 @@ enum GameplayState {
     Over,
 }
 
-#[derive(Component, Clone, Copy, PartialEq, Eq)]
-enum MenuItem {
-    Start,
-    Quit,
-}
+#[derive(Component)]
+struct MenuItem;
 
 #[derive(Component)]
 struct SelectedMenuItem;
 
-fn setup_menu(mut commands: Commands) {
-    commands
-        .spawn((
-            StateScoped(AppState::Menu),
-            Camera2d,
-            Node {
-                width: Val::Percent(100.0),
-                height: Val::Percent(100.0),
-                flex_direction: FlexDirection::Column,
-                justify_content: JustifyContent::Center,
-                align_items: AlignItems::Center,
-                ..default()
-            },
-        ))
-        .with_children(|parent| {
-            for (i, (item, label)) in [(MenuItem::Start, "Start"), (MenuItem::Quit, "Quit")]
-                .iter()
-                .enumerate()
-            {
-                if i == 0 {
-                    parent.spawn((
-                        *item,
-                        SelectedMenuItem,
-                        Text::new(*label),
-                        TextColor(Color::srgb(1.0, 0.0, 0.0)),
-                        TextFont::from_font_size(40.0),
-                    ));
-                } else {
-                    parent.spawn((
-                        *item,
-                        Text::new(*label),
-                        TextColor(Color::WHITE),
-                        TextFont::from_font_size(40.0),
-                    ));
-                };
-            }
-        });
+#[derive(Component, Clone, Copy, PartialEq, Eq)]
+enum MainMenuItem {
+    Start,
+    Quit,
+}
+
+#[derive(Component, Clone, Copy, PartialEq, Eq)]
+enum PauseMenuItem {
+    Resume,
+    Quit,
 }
 
 fn handle_menu_navigation(
@@ -558,21 +533,134 @@ fn update_menu_item_colors(
     }
 }
 
-fn handle_menu_selection(
-    selected_menu_item: Single<&MenuItem, With<SelectedMenuItem>>,
+fn setup_main_menu(mut commands: Commands) {
+    commands
+        .spawn((
+            StateScoped(AppState::Menu),
+            Node {
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                flex_direction: FlexDirection::Column,
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..default()
+            },
+        ))
+        .with_children(|parent| {
+            for (i, (item, label)) in [(MainMenuItem::Start, "Start"), (MainMenuItem::Quit, "Quit")]
+                .iter()
+                .enumerate()
+            {
+                if i == 0 {
+                    parent.spawn((
+                        *item,
+                        MenuItem,
+                        SelectedMenuItem,
+                        Text::new(*label),
+                        TextColor(Color::srgb(1.0, 0.0, 0.0)),
+                        TextFont::from_font_size(40.0),
+                    ));
+                } else {
+                    parent.spawn((
+                        *item,
+                        MenuItem,
+                        Text::new(*label),
+                        TextColor(Color::WHITE),
+                        TextFont::from_font_size(40.0),
+                    ));
+                };
+            }
+        });
+}
+
+fn handle_main_menu_selection(
+    selected_menu_item: Single<&MainMenuItem, With<SelectedMenuItem>>,
     keyboard_input: Res<ButtonInput<KeyCode>>,
     mut next_state: ResMut<NextState<AppState>>,
     mut event_writer: EventWriter<AppExit>,
 ) {
     if keyboard_input.just_pressed(KeyCode::Enter) {
         match *selected_menu_item {
-            MenuItem::Start => {
+            MainMenuItem::Start => {
                 next_state.set(AppState::Gameplay);
             }
-            MenuItem::Quit => {
+            MainMenuItem::Quit => {
                 event_writer.write(AppExit::Success);
             }
         }
+    }
+}
+
+fn setup_pause_menu(mut commands: Commands) {
+    commands
+        .spawn((
+            StateScoped(GameplayState::Paused),
+            Node {
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                flex_direction: FlexDirection::Column,
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.75)),
+        ))
+        .with_children(|parent| {
+            for (i, (item, label)) in [
+                (PauseMenuItem::Resume, "Resume"),
+                (PauseMenuItem::Quit, "Quit"),
+            ]
+            .iter()
+            .enumerate()
+            {
+                if i == 0 {
+                    parent.spawn((
+                        *item,
+                        MenuItem,
+                        SelectedMenuItem,
+                        Text::new(*label),
+                        TextColor(Color::srgb(1.0, 0.0, 0.0)),
+                        TextFont::from_font_size(40.0),
+                    ));
+                } else {
+                    parent.spawn((
+                        *item,
+                        MenuItem,
+                        Text::new(*label),
+                        TextColor(Color::WHITE),
+                        TextFont::from_font_size(40.0),
+                    ));
+                };
+            }
+        });
+}
+
+fn handle_pause_menu_selection(
+    selected_menu_item: Single<&PauseMenuItem, With<SelectedMenuItem>>,
+    keyboard_input: Res<ButtonInput<KeyCode>>,
+    mut next_gameplay_state: ResMut<NextState<GameplayState>>,
+    mut next_app_state: ResMut<NextState<AppState>>,
+) {
+    if keyboard_input.just_pressed(KeyCode::Enter) {
+        match *selected_menu_item {
+            PauseMenuItem::Resume => {
+                next_gameplay_state.set(GameplayState::Running);
+            }
+            PauseMenuItem::Quit => {
+                next_app_state.set(AppState::Menu);
+            }
+        }
+    }
+}
+
+fn toggle_pause(
+    current_state: Res<State<GameplayState>>,
+    mut next_state: ResMut<NextState<GameplayState>>,
+) {
+    if *current_state != GameplayState::Paused {
+        next_state.set(GameplayState::Paused)
+    } else {
+        next_state.set(GameplayState::Running)
     }
 }
 
@@ -590,16 +678,39 @@ fn main() {
     app.insert_resource(ClearColor(Color::BLACK));
     app.insert_resource(TickTimer(Timer::from_seconds(0.1, TimerMode::Repeating)));
 
-    app.add_systems(OnEnter(AppState::Menu), setup_menu);
+    app.add_systems(Startup, setup_camera);
+
+    app.add_systems(OnEnter(AppState::Menu), setup_main_menu);
     app.add_systems(
         Update,
         (
             handle_menu_navigation,
             update_menu_item_colors,
-            handle_menu_selection,
+            handle_main_menu_selection,
         )
             .chain()
             .run_if(in_state(AppState::Menu)),
+    );
+
+    app.add_systems(OnEnter(GameplayState::Paused), setup_pause_menu);
+    app.add_systems(
+        Update,
+        (
+            handle_menu_navigation,
+            update_menu_item_colors,
+            handle_pause_menu_selection,
+        )
+            .chain()
+            .run_if(in_state(GameplayState::Paused)),
+    );
+
+    app.add_systems(
+        Update,
+        toggle_pause.run_if(
+            in_state(GameplayState::Running)
+                .or(in_state(GameplayState::Paused))
+                .and(input_just_pressed(KeyCode::Space)),
+        ),
     );
 
     app.add_systems(
@@ -607,7 +718,7 @@ fn main() {
         (
             setup_texture_atlas,
             setup_cell_size,
-            setup_camera,
+            setup_gameplay_camera,
             setup_grid,
             setup_snake,
             setup_food,
@@ -620,13 +731,18 @@ fn main() {
         (
             resize_cells,
             offset_camera.run_if(resource_changed::<CellSize>),
-            (advance_tick_timer, control_snake).run_if(in_state(GameplayState::Running)),
-            move_snake,
-            open_mouth,
-            consume_food,
+            (
+                advance_tick_timer,
+                control_snake,
+                move_snake,
+                open_mouth,
+                consume_food,
+            )
+                .chain()
+                .run_if(in_state(GameplayState::Running)),
         )
-            .run_if(in_state(AppState::Gameplay))
-            .chain(),
+            .chain()
+            .run_if(in_state(AppState::Gameplay)),
     );
 
     app.run();

@@ -24,11 +24,12 @@ enum AtlasSprite {
     Head2 = 1,
     Head3 = 2,
     Head4 = 3,
-    Body1 = 4,
-    Body2 = 6,
-    Tail1 = 8,
-    Tail2 = 9,
-    Fish = 10,
+    Head5 = 4,
+    Body1 = 6,
+    Body2 = 8,
+    Tail1 = 10,
+    Tail2 = 11,
+    Fish = 12,
 }
 
 #[derive(Default, Resource, Deref, DerefMut)]
@@ -125,7 +126,7 @@ fn setup_texture_atlas(
     atlas.layout = texture_atlas_layouts.add(TextureAtlasLayout::from_grid(
         UVec2::splat(16),
         2,
-        6,
+        7,
         None,
         None,
     ));
@@ -252,6 +253,23 @@ fn setup_food(mut commands: Commands, size: Res<CellSize>, atlas: Res<Atlas>) {
     ));
 }
 
+fn reset(
+    mut commands: Commands,
+    snake: Query<Entity, Or<(With<SnakeBody>, With<SnakeTail>, With<SnakeHead>)>>,
+    food: Single<Entity, With<Food>>,
+    mut next_state: ResMut<NextState<GameplayState>>,
+    mut timer: ResMut<TickTimer>,
+) {
+    for entity in snake.iter() {
+        commands.entity(entity).despawn();
+    }
+    commands.entity(*food).despawn();
+    commands.run_system_cached(setup_snake);
+    commands.run_system_cached(setup_food);
+    next_state.set(GameplayState::Running);
+    timer.reset();
+}
+
 fn offset_camera(
     mut camera: Single<&mut Transform, With<Camera>>,
     mut resize_reader: EventReader<WindowResized>,
@@ -286,8 +304,6 @@ fn every_tick() -> impl Condition<()> {
 }
 
 fn control_snake(keyboard_input: Res<ButtonInput<KeyCode>>, mut input_buffer: ResMut<InputBuffer>) {
-    let mut new_dir = None;
-
     if keyboard_input.just_pressed(KeyCode::ArrowLeft) {
         input_buffer.push(Direction::Left);
     } else if keyboard_input.just_pressed(KeyCode::ArrowRight) {
@@ -397,6 +413,25 @@ fn open_mouth(
     }
 }
 
+fn handle_hit(
+    mut commands: Commands,
+    head: Single<(&mut Cell, &Direction, &mut Transform, &mut Sprite), With<SnakeHead>>,
+    rest: Query<(Entity, &Cell), (Or<(With<SnakeBody>, With<SnakeTail>)>, Without<SnakeHead>)>,
+    size: Res<CellSize>,
+    mut next_state: ResMut<NextState<GameplayState>>,
+) {
+    let (mut head_cell, head_dir, mut head_transform, mut head_sprite) = head.into_inner();
+    if rest.iter().any(|(_, cell)| *cell == *head_cell) {
+        commands.entity(rest.iter().next().unwrap().0).despawn();
+        **head_cell = (**head_cell + (-head_dir.to_vec())).rem_euclid(GRID_CELLS.as_vec2());
+        head_transform.translation = Vec3::from((**head_cell * **size, 0.0));
+        if let Some(atlas) = head_sprite.texture_atlas.as_mut() {
+            atlas.index = AtlasSprite::Head5 as usize;
+        }
+        next_state.set(GameplayState::Over)
+    }
+}
+
 fn consume_food(
     mut commands: Commands,
     head: Single<&Cell, With<SnakeHead>>,
@@ -463,6 +498,7 @@ enum GameplayState {
     Running,
     Paused,
     Over,
+    Reset,
 }
 
 #[derive(Component)]
@@ -591,6 +627,49 @@ fn setup_pause_menu(
         });
 }
 
+fn setup_over_menu(
+    mut commands: Commands,
+    mut dir_nav_map: ResMut<DirectionalNavigationMap>,
+    mut input_focus: ResMut<InputFocus>,
+) {
+    commands
+        .spawn((
+            StateScoped(GameplayState::Over),
+            create_menu_root_node(),
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.75)),
+        ))
+        .with_children(|parent| {
+            let resume_btn = parent
+                .spawn(create_menu_button("Continue"))
+                .observe(
+                    |_: Trigger<FocusedInput<KeyboardInput>>,
+                     keyboard_input: Res<ButtonInput<KeyCode>>,
+                     mut next_state: ResMut<NextState<GameplayState>>| {
+                        if keyboard_input.just_pressed(KeyCode::Enter) {
+                            next_state.set(GameplayState::Reset);
+                        }
+                    },
+                )
+                .id();
+
+            let quit_btn = parent
+                .spawn(create_menu_button("Quit"))
+                .observe(
+                    |_: Trigger<FocusedInput<KeyboardInput>>,
+                     keyboard_input: Res<ButtonInput<KeyCode>>,
+                     mut next_state: ResMut<NextState<AppState>>| {
+                        if keyboard_input.just_pressed(KeyCode::Enter) {
+                            next_state.set(AppState::Menu);
+                        }
+                    },
+                )
+                .id();
+
+            dir_nav_map.add_looping_edges(&[resume_btn, quit_btn], CompassOctant::South);
+            input_focus.set(resume_btn);
+        });
+}
+
 fn toggle_pause(
     current_state: Res<State<GameplayState>>,
     mut next_state: ResMut<NextState<GameplayState>>,
@@ -651,6 +730,20 @@ fn main() {
             .run_if(in_state(GameplayState::Paused)),
     );
 
+    app.add_systems(OnEnter(GameplayState::Over), setup_over_menu);
+    app.add_systems(
+        Update,
+        (
+            (
+                navigate_menu_up.run_if(input_just_pressed(KeyCode::ArrowUp)),
+                navigate_menu_down.run_if(input_just_pressed(KeyCode::ArrowDown)),
+            ),
+            highlight_focused_menu_button.run_if(resource_changed::<InputFocus>),
+        )
+            .chain()
+            .run_if(in_state(GameplayState::Over)),
+    );
+
     app.add_systems(
         Update,
         toggle_pause.run_if(
@@ -673,6 +766,8 @@ fn main() {
             .chain(),
     );
 
+    app.add_systems(OnEnter(GameplayState::Reset), reset);
+
     app.add_systems(
         Update,
         (
@@ -681,7 +776,7 @@ fn main() {
             (
                 advance_tick_timer,
                 control_snake,
-                (move_snake, open_mouth, consume_food)
+                (move_snake, open_mouth, consume_food, handle_hit)
                     .chain()
                     .run_if(every_tick()),
             )

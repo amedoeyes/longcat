@@ -1,7 +1,18 @@
 #![allow(clippy::type_complexity)]
 #![allow(clippy::too_many_arguments)]
 
-use bevy::{input::common_conditions::input_just_pressed, prelude::*, window::WindowResized};
+use bevy::{
+    input::{common_conditions::input_just_pressed, keyboard::KeyboardInput},
+    input_focus::{
+        FocusedInput, InputDispatchPlugin, InputFocus,
+        directional_navigation::{
+            DirectionalNavigation, DirectionalNavigationMap, DirectionalNavigationPlugin,
+        },
+    },
+    math::CompassOctant,
+    prelude::*,
+    window::WindowResized,
+};
 use std::{collections::VecDeque, mem};
 
 const GRID_CELLS: IVec2 = IVec2::new(20, 10);
@@ -473,184 +484,129 @@ enum GameplayState {
 }
 
 #[derive(Component)]
-struct MenuItem;
+struct MenuButton;
 
-#[derive(Component)]
-struct SelectedMenuItem;
-
-#[derive(Component, Clone, Copy, PartialEq, Eq)]
-enum MainMenuItem {
-    Start,
-    Quit,
+fn navigate_menu_up(mut dir_nav: DirectionalNavigation) {
+    dir_nav.navigate(CompassOctant::North).unwrap();
 }
 
-#[derive(Component, Clone, Copy, PartialEq, Eq)]
-enum PauseMenuItem {
-    Resume,
-    Quit,
+fn navigate_menu_down(mut dir_nav: DirectionalNavigation) {
+    dir_nav.navigate(CompassOctant::South).unwrap();
 }
 
-fn handle_menu_navigation(
-    mut commands: Commands,
-    keyboard_input: Res<ButtonInput<KeyCode>>,
-    selected_menu_item: Single<Entity, With<SelectedMenuItem>>,
-    menu_items: Query<Entity, With<MenuItem>>,
+fn highlight_focused_menu_button(
+    mut query: Query<(Entity, &mut TextColor), With<MenuButton>>,
+    input_focus: Res<InputFocus>,
 ) {
-    if keyboard_input.just_pressed(KeyCode::ArrowUp)
-        || keyboard_input.just_pressed(KeyCode::ArrowDown)
-    {
-        let menu_items = menu_items.iter().collect::<Vec<Entity>>();
-
-        if let Some(current_index) = menu_items.iter().position(|&e| e == *selected_menu_item) {
-            let new_index = if keyboard_input.just_pressed(KeyCode::ArrowUp) {
-                current_index.wrapping_sub(1)
-            } else {
-                current_index + 1
-            }
-            .rem_euclid(menu_items.len());
-
-            commands
-                .entity(*selected_menu_item)
-                .remove::<SelectedMenuItem>();
-
-            commands
-                .entity(menu_items[new_index])
-                .insert(SelectedMenuItem);
+    for (entity, mut text_color) in query.iter_mut() {
+        if input_focus.0 == Some(entity) {
+            text_color.0 = Color::srgb(1.0, 0.0, 0.0);
+        } else {
+            text_color.0 = Color::WHITE;
         }
     }
 }
 
-fn update_menu_item_colors(
-    mut selected_menu_item: Single<
-        &mut TextColor,
-        (With<SelectedMenuItem>, Changed<SelectedMenuItem>),
-    >,
-    mut menu_items: Query<&mut TextColor, (With<MenuItem>, Without<SelectedMenuItem>)>,
-) {
-    selected_menu_item.0 = Color::srgb(1.0, 0.0, 0.0);
-    for mut item in menu_items.iter_mut() {
-        item.0 = Color::WHITE;
+fn create_menu_button(label: &str) -> impl Bundle {
+    (
+        MenuButton,
+        Text::new(label),
+        TextColor(Color::WHITE),
+        TextFont::from_font_size(40.0),
+    )
+}
+
+fn create_menu_root_node() -> impl Bundle {
+    Node {
+        width: Val::Percent(100.0),
+        height: Val::Percent(100.0),
+        flex_direction: FlexDirection::Column,
+        justify_content: JustifyContent::Center,
+        align_items: AlignItems::Center,
+        ..default()
     }
 }
 
-fn setup_main_menu(mut commands: Commands) {
+fn setup_main_menu(
+    mut commands: Commands,
+    mut dir_nav_map: ResMut<DirectionalNavigationMap>,
+    mut input_focus: ResMut<InputFocus>,
+) {
     commands
-        .spawn((
-            StateScoped(AppState::Menu),
-            Node {
-                width: Val::Percent(100.0),
-                height: Val::Percent(100.0),
-                flex_direction: FlexDirection::Column,
-                justify_content: JustifyContent::Center,
-                align_items: AlignItems::Center,
-                ..default()
-            },
-        ))
+        .spawn((StateScoped(AppState::Menu), create_menu_root_node()))
         .with_children(|parent| {
-            for (i, (item, label)) in [(MainMenuItem::Start, "Start"), (MainMenuItem::Quit, "Quit")]
-                .iter()
-                .enumerate()
-            {
-                if i == 0 {
-                    parent.spawn((
-                        *item,
-                        MenuItem,
-                        SelectedMenuItem,
-                        Text::new(*label),
-                        TextColor(Color::srgb(1.0, 0.0, 0.0)),
-                        TextFont::from_font_size(40.0),
-                    ));
-                } else {
-                    parent.spawn((
-                        *item,
-                        MenuItem,
-                        Text::new(*label),
-                        TextColor(Color::WHITE),
-                        TextFont::from_font_size(40.0),
-                    ));
-                };
-            }
+            let start_btn = parent
+                .spawn(create_menu_button("Start"))
+                .observe(
+                    |_: Trigger<FocusedInput<KeyboardInput>>,
+                     keyboard_input: Res<ButtonInput<KeyCode>>,
+                     mut next_state: ResMut<NextState<AppState>>| {
+                        if keyboard_input.just_pressed(KeyCode::Enter) {
+                            next_state.set(AppState::Gameplay);
+                        }
+                    },
+                )
+                .id();
+
+            let quit_btn = parent
+                .spawn(create_menu_button("Quit"))
+                .observe(
+                    |_: Trigger<FocusedInput<KeyboardInput>>,
+                     keyboard_input: Res<ButtonInput<KeyCode>>,
+                     mut event_writer: EventWriter<AppExit>| {
+                        if keyboard_input.just_pressed(KeyCode::Enter) {
+                            event_writer.write(AppExit::Success);
+                        }
+                    },
+                )
+                .id();
+
+            dir_nav_map.add_looping_edges(&[start_btn, quit_btn], CompassOctant::South);
+            input_focus.set(start_btn);
         });
 }
 
-fn handle_main_menu_selection(
-    selected_menu_item: Single<&MainMenuItem, With<SelectedMenuItem>>,
-    keyboard_input: Res<ButtonInput<KeyCode>>,
-    mut next_state: ResMut<NextState<AppState>>,
-    mut event_writer: EventWriter<AppExit>,
+fn setup_pause_menu(
+    mut commands: Commands,
+    mut dir_nav_map: ResMut<DirectionalNavigationMap>,
+    mut input_focus: ResMut<InputFocus>,
 ) {
-    if keyboard_input.just_pressed(KeyCode::Enter) {
-        match *selected_menu_item {
-            MainMenuItem::Start => {
-                next_state.set(AppState::Gameplay);
-            }
-            MainMenuItem::Quit => {
-                event_writer.write(AppExit::Success);
-            }
-        }
-    }
-}
-
-fn setup_pause_menu(mut commands: Commands) {
     commands
         .spawn((
             StateScoped(GameplayState::Paused),
-            Node {
-                width: Val::Percent(100.0),
-                height: Val::Percent(100.0),
-                flex_direction: FlexDirection::Column,
-                justify_content: JustifyContent::Center,
-                align_items: AlignItems::Center,
-                ..default()
-            },
+            create_menu_root_node(),
             BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.75)),
         ))
         .with_children(|parent| {
-            for (i, (item, label)) in [
-                (PauseMenuItem::Resume, "Resume"),
-                (PauseMenuItem::Quit, "Quit"),
-            ]
-            .iter()
-            .enumerate()
-            {
-                if i == 0 {
-                    parent.spawn((
-                        *item,
-                        MenuItem,
-                        SelectedMenuItem,
-                        Text::new(*label),
-                        TextColor(Color::srgb(1.0, 0.0, 0.0)),
-                        TextFont::from_font_size(40.0),
-                    ));
-                } else {
-                    parent.spawn((
-                        *item,
-                        MenuItem,
-                        Text::new(*label),
-                        TextColor(Color::WHITE),
-                        TextFont::from_font_size(40.0),
-                    ));
-                };
-            }
-        });
-}
+            let resume_btn = parent
+                .spawn(create_menu_button("Resume"))
+                .observe(
+                    |_: Trigger<FocusedInput<KeyboardInput>>,
+                     keyboard_input: Res<ButtonInput<KeyCode>>,
+                     mut next_state: ResMut<NextState<GameplayState>>| {
+                        if keyboard_input.just_pressed(KeyCode::Enter) {
+                            next_state.set(GameplayState::Running);
+                        }
+                    },
+                )
+                .id();
 
-fn handle_pause_menu_selection(
-    selected_menu_item: Single<&PauseMenuItem, With<SelectedMenuItem>>,
-    keyboard_input: Res<ButtonInput<KeyCode>>,
-    mut next_gameplay_state: ResMut<NextState<GameplayState>>,
-    mut next_app_state: ResMut<NextState<AppState>>,
-) {
-    if keyboard_input.just_pressed(KeyCode::Enter) {
-        match *selected_menu_item {
-            PauseMenuItem::Resume => {
-                next_gameplay_state.set(GameplayState::Running);
-            }
-            PauseMenuItem::Quit => {
-                next_app_state.set(AppState::Menu);
-            }
-        }
-    }
+            let quit_btn = parent
+                .spawn(create_menu_button("Quit"))
+                .observe(
+                    |_: Trigger<FocusedInput<KeyboardInput>>,
+                     keyboard_input: Res<ButtonInput<KeyCode>>,
+                     mut next_state: ResMut<NextState<AppState>>| {
+                        if keyboard_input.just_pressed(KeyCode::Enter) {
+                            next_state.set(AppState::Menu);
+                        }
+                    },
+                )
+                .id();
+
+            dir_nav_map.add_looping_edges(&[resume_btn, quit_btn], CompassOctant::South);
+            input_focus.set(resume_btn);
+        });
 }
 
 fn toggle_pause(
@@ -667,7 +623,11 @@ fn toggle_pause(
 fn main() {
     let mut app = App::default();
 
-    app.add_plugins(DefaultPlugins.set(ImagePlugin::default_nearest()));
+    app.add_plugins((
+        DefaultPlugins.set(ImagePlugin::default_nearest()),
+        InputDispatchPlugin,
+        DirectionalNavigationPlugin,
+    ));
 
     app.init_state::<AppState>();
     app.add_sub_state::<GameplayState>();
@@ -680,13 +640,16 @@ fn main() {
 
     app.add_systems(Startup, setup_camera);
 
+    app.add_systems(Startup, setup_main_menu.run_if(in_state(AppState::Menu))); // delete this in 0.17
     app.add_systems(OnEnter(AppState::Menu), setup_main_menu);
     app.add_systems(
         Update,
         (
-            handle_menu_navigation,
-            update_menu_item_colors,
-            handle_main_menu_selection,
+            (
+                navigate_menu_up.run_if(input_just_pressed(KeyCode::ArrowUp)),
+                navigate_menu_down.run_if(input_just_pressed(KeyCode::ArrowDown)),
+            ),
+            highlight_focused_menu_button.run_if(resource_changed::<InputFocus>),
         )
             .chain()
             .run_if(in_state(AppState::Menu)),
@@ -696,9 +659,11 @@ fn main() {
     app.add_systems(
         Update,
         (
-            handle_menu_navigation,
-            update_menu_item_colors,
-            handle_pause_menu_selection,
+            (
+                navigate_menu_up.run_if(input_just_pressed(KeyCode::ArrowUp)),
+                navigate_menu_down.run_if(input_just_pressed(KeyCode::ArrowDown)),
+            ),
+            highlight_focused_menu_button.run_if(resource_changed::<InputFocus>),
         )
             .chain()
             .run_if(in_state(GameplayState::Paused)),

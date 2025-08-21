@@ -35,14 +35,18 @@ fn navigate_down(mut dir_nav: DirectionalNavigation) {
 }
 
 fn highlight_focused(
-    mut query: Query<(Entity, &mut TextColor), With<Button>>,
+    mut buttons: Query<(Entity, &mut BackgroundColor, &Children), With<Button>>,
+    mut text: Query<&mut TextColor>,
     input_focus: Res<InputFocus>,
 ) {
-    for (entity, mut text_color) in query.iter_mut() {
+    for (entity, mut background_color, children) in buttons.iter_mut() {
+        let mut text_color = text.get_mut(children[0]).unwrap();
         if input_focus.0 == Some(entity) {
-            text_color.0 = Color::srgb(1.0, 0.0, 0.0);
+            background_color.0 = Color::srgb_u8(0xa0, 0xa0, 0xa0);
+            text_color.0 = Color::srgb_u8(0x00, 0x00, 0x00);
         } else {
-            text_color.0 = Color::WHITE;
+            background_color.0 = Color::NONE;
+            text_color.0 = Color::srgb_u8(0xa0, 0xa0, 0xa0);
         }
     }
 }
